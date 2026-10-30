@@ -1,21 +1,19 @@
 name: ImmortalWrt-Airoha
 
-# 让 Actions 列表直接显示本次选了什么，省得点进去翻日志里的 env 块。
-# 必须写成一行：折叠标量会把缩进更深的续行当字面量，在 ${{ }} 中间插进换行。
 run-name: "${{ inputs.device == 'all' && '全部机型' || inputs.device == 'xg-040g-mf' && 'XG-040G-MF' || inputs.device == 'xg-040g-tf' && 'XG-040G-TF' || inputs.device == 'zn504xg-d' && 'ZN504XG-D' || inputs.device == 'hg5382a' && 'HG5382A' || 'XG-040G-MD' }} · ${{ inputs.repo_branch || 'master-airoha' }} · ${{ inputs.dram_size == 'auto' && '自适应内存' || inputs.dram_size }} · ${{ inputs.device_variant }}${{ inputs.extra_packages != '' && ' · 有附加包' || '' }}${{ inputs.pkg_versions != '' && ' · 指定版本' || '' }}${{ inputs.release == 'prerelease' && ' · pre-release' || inputs.release == 'artifact' && ' · 不发布' || '' }}"
 
 on:
   workflow_dispatch:
     inputs:
       repo_branch:
-        description: '源码分支（Loong1996/immortalwrt）。留空即 master-airoha；填别的分支只作测试，默认只传 Artifact、不更新选包索引'
+        description: '源码分支（Loong1996/immortalwrt）。留空即 master-airoha'
         required: false
         default: 'master-airoha'
         type: string
       device:
-        description: '机型（默认 all：每个机型各起一个 job 并行编，stock 变体只编 MD 与 MF）'
+        description: '机型'
         required: true
-        default: 'all'
+        default: 'xg-040g-tf'
         type: choice
         options:
           - all
@@ -25,7 +23,7 @@ on:
           - zn504xg-d
           - hg5382a
       device_variant:
-        description: '设备变体（ubi 推荐：作者魔改 U-Boot，带网页救砖；stock 保留原厂引导）'
+        description: '设备变体（ubi 推荐）'
         required: true
         default: 'ubi'
         type: choice
@@ -33,7 +31,7 @@ on:
           - ubi
           - stock
       dram_size:
-        description: '内存上限（默认自适应，U-Boot 探测实际颗粒；选具体档位只会把系统往小里限，用于对照实验）'
+        description: '内存上限'
         required: true
         default: 'auto'
         type: choice
@@ -43,31 +41,26 @@ on:
           - 1G
           - 2G
       extra_packages:
-        description: '附加软件包（空格分隔；包名前加 - 表示移除。可用选包页生成）'
+        description: '附加软件包（空格分隔，例如：luci-app-daed luci-i18n-daed-zh-cn）'
         required: false
-        default: ''
+        default: 'luci-app-daed luci-i18n-daed-zh-cn'
         type: string
       pkg_versions:
-        description: '⚗️ 实验性 · 指定软件包版本（如 sing-box=1.13.19，跨版本不保证编得过；留空用 config/pkg-versions.txt）'
+        description: '指定软件包版本（实验性）'
         required: false
         default: ''
         type: string
-      run_refresh_check:
-        description: '补丁偏移检查（会 clean 并重新 prepare 内核与 uboot，拖长本次编译且让缓存失效，平时不用勾）'
-        required: false
-        default: false
-        type: boolean
       release:
-        description: '发布方式。auto：main 上编 master-airoha 发正式 Release，其余只传 Artifact；prerelease：发 Release 但标 pre-release（不盖 Latest、不进教程下载列表、不更新选包索引），非 main 分支想进 Release 选它；artifact：只传 Artifact（客户定制等），在本次运行页面下载，保留 30 天'
+        description: '发布方式'
         required: true
-        default: 'auto'
+        default: 'artifact'
         type: choice
         options:
           - auto
           - prerelease
           - artifact
       release_label:
-        description: '发布标注（可选，写在 Release 标题末尾，只传 Artifact 时写在运行摘要里，如「客户 A 定制」）'
+        description: '发布标注（可选）'
         required: false
         default: ''
         type: string
@@ -78,78 +71,69 @@ env:
   EXTRA_PACKAGES: ${{ github.event.inputs.extra_packages }}
   PKG_VERSIONS: ${{ github.event.inputs.pkg_versions }}
   REPO_URL: https://github.com/Loong1996/immortalwrt.git
-  # 只维护 master-airoha 这一条线；输入留空时用它，填别的分支只作测试
   REPO_BRANCH: ${{ github.event.inputs.repo_branch || 'master-airoha' }}
   DEVICE_TARGET: airoha
-  # 默认值；由 Generate Variables 按机型覆写（MF 是 an7583）
   DEVICE_SUBTARGET: an7581
   CONFIG_FILE: config/xg-040g-md-master.config
   CACHE_TOOLCHAIN: true
   UPLOAD_BIN_DIR: false
-  RELEASE_MODE: ${{ github.event.inputs.release || 'auto' }}
+  RELEASE_MODE: ${{ github.event.inputs.release || 'artifact' }}
   TZ: Asia/Shanghai
 
 jobs:
   Build:
     name: ${{ matrix.device }}
     runs-on: ubuntu-24.04
-    # 选 all 时每个机型一个 job 并行编；单选时矩阵里只有这一个机型。
-    # TF、ZN504 与 HG5382A 只有 ubi 布局，stock 下的 all 不带它们。
-    # 一个机型失败不取消其他机型。
     strategy:
       fail-fast: false
       matrix:
         device: ${{ fromJSON(inputs.device != 'all' && format('["{0}"]', inputs.device) || inputs.device_variant == 'stock' && '["xg-040g-md","xg-040g-mf"]' || '["xg-040g-md","xg-040g-mf","xg-040g-tf","zn504xg-d","hg5382a"]') }}
     env:
       DEVICE: ${{ matrix.device }}
-    # 发布 Release 需要写权限；仅授予 contents，其余 scope 自动为 none
-    # 需配合仓库设置 Settings → Actions → General → Workflow permissions
-    # 选择 "Read and write permissions"，否则此声明会被仓库级只读设置压制
     permissions:
       contents: write
 
     steps:
     - name: Check Server Performance(检查服务器性能)
       run: |
-        echo "警告⚠"
-        echo "分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
-        echo -e "已知CPU型号（降序）：7763，8370C，8272CL，8171M，E5-2673 \n"
+        echo "警告⚠ 分配的服务器性能有限，若选择的插件过多，务必注意CPU性能！"
         echo "--------------------------CPU信息--------------------------"
         echo "CPU物理数量：$(cat /proc/cpuinfo | grep "physical id" | sort | uniq | wc -l)"
         echo -e "CPU核心信息：$(cat /proc/cpuinfo | grep name | cut -f2 -d: | uniq -c) \n"
         echo "--------------------------内存信息--------------------------"
-        echo "已安装内存详细信息："
-        echo -e "$(sudo lshw -short -C memory | grep GiB) \n"
+        free -h
         echo "--------------------------硬盘信息--------------------------"
-        echo "硬盘数量：$(ls /dev/sd* | grep -v [1-9] | wc -l)" && df -hT
+        df -hT
 
     - name: Initialization Environment(初始化环境)
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache
-        sudo dpkg --add-architecture i386
+        sudo dpkg --add-architecture i386 || true
         sudo apt-get update -y
         sudo apt-get install -y \
-          build-essential clang flex bison g++ gawk gcc-multilib g++-multilib \
-          gettext git libncurses-dev libssl-dev python3-setuptools rsync swig unzip zlib1g-dev \
-          file wget curl ccache cmake ninja-build pkg-config \
+          build-essential clang flex bison g++ gawk \
+          gcc-multilib g++-multilib gettext git \
+          libncurses-dev libssl-dev python3-setuptools \
+          rsync swig unzip zlib1g-dev file wget curl \
+          ccache cmake ninja-build pkg-config \
           libelf-dev libglib2.0-dev libgmp-dev liblzo2-dev libfuse-dev \
           device-tree-compiler squashfs-tools genisoimage \
           python3 python3-dev python3-pip \
           qemu-utils subversion uglifyjs xmlto xxd dos2unix \
           p7zip-full patch help2man
         sudo timedatectl set-timezone "$TZ"
-        
+
     - name: Combine Disks(合并磁盘)
-      uses: easimon/maximize-build-space@fc881a613ad2a34aca9c9624518214ebc21dfc0c # v10
+      uses: easimon/maximize-build-space@v10
       with:
         swap-size-mb: 1024
         temp-reserve-mb: 100
         root-reserve-mb: 1024
 
     - name: Checkout
-      uses: actions/checkout@v7
+      uses: actions/checkout@v4
 
     - name: Clone Source Code(克隆源代码)
       run: |
@@ -160,68 +144,8 @@ jobs:
         VERSION_INFO=$(git show -s --date=short --format="作者: %an<br/>时间: %cd<br/>内容: %s<br/>hash: %H")
         echo "VERSION_INFO=$VERSION_INFO" >> $GITHUB_ENV
 
-    - name: Patch DRAM Size(设置内存上限)
-      if: env.DRAM_SIZE != ''
-      run: |
-        cd $OPENWRT_PATH
-        # memory 节点在 dts/an758x-nokia_xg-040g-common.dtsi，MD / MF 共用，
-        # 该属性跨两行书写。按内容定位文件，并用容忍空白与换行的正则改写。
-        #
-        # 真正生效的是 usable-memory-range：memory 节点会被 U-Boot 的
-        # fdt_fixup_memory_banks() 用探测值覆盖掉，改了也白改（保留改写只当文档）。
-        # 而 memblock_cap_memory_range() 只做 remove，所以档位是「上限」语义——
-        # 只会把系统往小里限，在颗粒本来就更小的机器上选大档位不会出事。
-        #
-        # auto 也跑这一步，但目的是防御而不是修复：本线的 dtsi 已经把 usable
-        # 放到 2G，这里是等值改写；上游那边仍是 512M-2M，哪天同步
-        # 覆盖回去，auto 出来的固件也不会突然只认一半内存。memory 节点不动，
-        # 留给 U-Boot 的 fixup 去填。
-        case "$DEVICE" in
-          zn504xg-d)           DTS_FILTER="zn504xg-d" ;;
-          hg5382a)             DTS_FILTER="hg5382a" ;;
-          *)                   DTS_FILTER="xg-040g" ;;
-        esac
-        DTS=$(grep -rl "linux,usable-memory-range" target/linux/airoha/dts/ 2>/dev/null | grep -i "$DTS_FILTER" | head -n1)
-        [ -n "$DTS" ] || { echo "::error::未找到含 usable-memory-range 的机型 dts"; exit 1; }
-        echo "目标文件: $DTS"
-
-        case "$DRAM_SIZE" in
-          auto) MEM_SIZE=;            USABLE_SIZE=0x7fe00000 ;;
-          512M) MEM_SIZE=0x20000000;  USABLE_SIZE=0x1fe00000 ;;
-          1G)   MEM_SIZE=0x40000000;  USABLE_SIZE=0x3fe00000 ;;
-          2G)   MEM_SIZE=0x80000000;  USABLE_SIZE=0x7fe00000 ;;
-          *)    echo "::error::不支持的 DRAM_SIZE=$DRAM_SIZE"; exit 1 ;;
-        esac
-        python3 - "$DTS" "$MEM_SIZE" "$USABLE_SIZE" <<'PY'
-        import re, sys
-        path, mem, usable = sys.argv[1], sys.argv[2], sys.argv[3]
-        s = open(path, encoding="utf-8").read()
-        n1 = "跳过"
-        # memory 节点：仅手动档位改写；auto 留给 U-Boot 的 fixup 去填
-        if mem:
-            s, n1 = re.subn(r"(reg\s*=\s*<0x0\s+0x80000000\s+0x0\s+)0x[0-9a-fA-F]+(\s*>\s*;)",
-                            lambda m: m.group(1) + mem + m.group(2), s)
-            if n1 != 1:
-                print("::error::memory 替换 %d 次（期望 1 次）" % n1)
-                sys.exit(1)
-        # chosen/linux,usable-memory-range：跳过 0x80000000 起 2MB 的 ATF 保留区
-        s, n2 = re.subn(r"(linux,usable-memory-range\s*=\s*<0x0\s+0x80200000\s+0x0\s+)0x[0-9a-fA-F]+(\s*>\s*;)",
-                        lambda m: m.group(1) + usable + m.group(2), s)
-        if n2 != 1:
-            print("::error::usable 替换 %d 次（期望 1 次）" % n2)
-            sys.exit(1)
-        open(path, "w", encoding="utf-8").write(s)
-        print("memory=%s usable=%s" % (mem or "（未改，交给 U-Boot fixup）", usable))
-        PY
-
-        echo "--- 修改后 ---"
-        grep -nE "usable-memory-range|0x80000000|0x80200000" "$DTS"
-
     - name: Generate Variables(生成变量)
       run: |
-        SOURCE_REPO="$(echo $REPO_URL | awk -F '/' '{print $(NF)}')"
-        # 机型决定子目标、配置文件与设备符号：MD 是 an7581，MF 是 an7583。
-        # 变体只有 ubi（作者魔改 U-Boot）与 stock（原厂引导），tcboot 早已移除。
         case "$DEVICE" in
           xg-040g-mf)
             DEVICE_SUBTARGET=an7583
@@ -250,988 +174,95 @@ jobs:
             ;;
           *) echo "::error::不支持的 device=$DEVICE"; exit 1 ;;
         esac
+
         case "$DEVICE" in
-          xg-040g-tf)
-            [ "$DEVICE_VARIANT" = "ubi" ] || { echo "::error::XG-040G-TF 只有 ubi 布局（不要选 stock）"; exit 1; }
-            DEVICE_SYMBOL=nokia_${DEVICE}-ubi
-            ;;
-          zn504xg-d)
-            [ "$DEVICE_VARIANT" = "ubi" ] || { echo "::error::ZNXT 只有 ubi 布局（不要选 stock）"; exit 1; }
-            DEVICE_SYMBOL=znxt_${DEVICE}-ubi
-            ;;
-          hg5382a)
-            [ "$DEVICE_VARIANT" = "ubi" ] || { echo "::error::HG5382A 只有 ubi 布局（不要选 stock）"; exit 1; }
-            DEVICE_SYMBOL=fiberhome_${DEVICE}-ubi
-            ;;
-          *)
-            case "$DEVICE_VARIANT" in
-              stock)  DEVICE_SYMBOL=nokia_${DEVICE} ;;
-              ubi)    DEVICE_SYMBOL=nokia_${DEVICE}-ubi ;;
-              *)      echo "::error::不支持的 device_variant=$DEVICE_VARIANT"; exit 1 ;;
-            esac
+          xg-040g-tf|zn504xg-d|hg5382a)
+            [ "$DEVICE_VARIANT" = "ubi" ] || { echo "::error::$DEVICE 只有 ubi 布局"; exit 1; }
             ;;
         esac
-        FLAVOR="$DEVICE_VARIANT"
-        VARIANT_LABEL="$DEVICE_VARIANT"
+
+        case "$DEVICE" in
+          xg-040g-tf)   DEVICE_SYMBOL=nokia_${DEVICE}-ubi ;;
+          zn504xg-d)    DEVICE_SYMBOL=znxt_${DEVICE}-ubi ;;
+          hg5382a)      DEVICE_SYMBOL=fiberhome_${DEVICE}-ubi ;;
+          *)
+            if [ "$DEVICE_VARIANT" = "stock" ]; then
+              DEVICE_SYMBOL=nokia_${DEVICE}
+            else
+              DEVICE_SYMBOL=nokia_${DEVICE}-ubi
+            fi
+            ;;
+        esac
+
         echo "CONFIG_FILE=$CONFIG_FILE" >> $GITHUB_ENV
         echo "DEVICE_SYMBOL=$DEVICE_SYMBOL" >> $GITHUB_ENV
-        echo "VARIANT_LABEL=$VARIANT_LABEL" >> $GITHUB_ENV
-        echo "FLAVOR=$FLAVOR" >> $GITHUB_ENV
-        echo "使用配置: $CONFIG_FILE    设备: $DEVICE_SYMBOL"
-        # 刷机方式随变体而变，写进 Release 正文，避免下载者搞错
-        {
-          echo 'LAYOUT_NOTE<<LAYOUTEOF'
-          case "$DEVICE_SYMBOL" in
-            nokia_xg-040g-md)
-              echo "- **保留原厂引导与原厂分区表**，kernel 写入 \`nsb_1\`，rootfs 寄生 \`data\` 分区（129 MB）"
-              echo "- MAC 从原厂 \`ri\` 分区读取，为真实硬件 MAC"
-              echo "- 保留原厂 \`nsb_2\` 备份 bank，是唯一可刷回原厂固件的变体"
-              echo "- 刷机用附件 \`factory-kernel.bin\` + \`factory-rootfs.bin\`"
-              ;;
-            nokia_xg-040g-mf)
-              echo "- **保留原厂引导与原厂分区表**"
-              echo "- 刷机用附件 \`factory-kernel.bin\` + \`factory-rootfs.bin\`"
-              ;;
-            nokia_xg-040g-mf-ubi)
-              echo "- OpenWrt U-Boot 布局：bl2 128K + ubi 255.875 MB（与 MD 共用 an758x 分区 dtsi）"
-              echo "- **会替换引导程序**，附件 \`preloader.bin\` 与 \`bl31-uboot.fip\` 需经 USB-TTL 刷入"
-              echo "- 附件 \`*-recovery.itb\` 为 initramfs 救援镜像"
-              echo "- MAC 取自 ubi 中的 \`ri\` 卷，原厂 \`bosa\` 亦需转存为同名卷"
-              echo "- 自带网页救砖（Airoha Web U-Boot），按住 reset 上电、引导失败或引导菜单第 9 项进入"
-              ;;
-            nokia_xg-040g-md-ubi)
-              echo "- OpenWrt U-Boot 布局：bl2 128K + ubi 255.875 MB"
-              echo "- **会替换引导程序**，附件 \`preloader.bin\` 与 \`bl31-uboot.fip\` 需经 USB-TTL 刷入"
-              echo "- 附件 \`*-recovery.itb\` 为 initramfs 救援镜像"
-              echo "- MAC 取自 ubi 中的 \`ri\` 卷，原厂 \`bosa\` 亦需转存为同名卷"
-              echo "- 自带网页救砖（Airoha Web U-Boot），按住 reset 上电、引导失败或引导菜单第 9 项进入"
-              ;;
-            nokia_xg-040g-tf-ubi)
-              echo "- OpenWrt U-Boot 布局：bl2 128K + ubi 255.875 MB，硬件与 XG-040G-MD 相同"
-              echo "- **会替换引导程序**，附件 \`preloader.bin\` 与 \`bl31-uboot.fip\` 需经 USB-TTL 刷入"
-              echo "- 芯片 efuse 烧了根密钥，开着安全启动：\`preloader.bin\` 带 BL2 签名证书，\`bl31-uboot.fip\` 带 BL31 与 U-Boot 的证书链"
-              echo "- 两个引导文件都**不能与 MD 的混用**：BootROM 不认没签名的 BL2，BL2 不认没证书的 FIP（报 \`Failed to load image id 3\`）"
-              echo "- 附件 \`*-recovery.itb\` 为 initramfs 救援镜像"
-              echo "- MAC 取自 ubi 中的 \`ri\` 卷，原厂 \`bosa\` 亦需转存为同名卷"
-              echo "- 自带网页救砖（Airoha Web U-Boot），按住 reset 上电、引导失败或引导菜单第 9 项进入"
-              ;;
-            znxt_zn504xg-d-ubi)
-              echo "- OpenWrt U-Boot 布局：bl2 128K + ubi（ESMT F50L2G41XA 256 MiB）"
-              echo "- **会替换引导程序**，附件 \`preloader.bin\` 与 \`bl31-uboot.fip\` 需经 USB-TTL 刷入"
-              echo "- 附件 \`*-recovery.itb\` 为 initramfs 救援镜像"
-              echo "- 自带网页救砖（Airoha Web U-Boot），按住 reset 上电、引导失败或引导菜单第 9 项进入"
-              echo "- 硬件按 XG-040G-MD 描述（LAN1 为 2.5G，LAN2~4 为千兆），没有 USB"
-              echo "- 没有出厂 MAC，网口使用随机 MAC"
-              ;;
-            fiberhome_hg5382a-ubi)
-              echo "- OpenWrt U-Boot 布局：bl2 128K + ubi（并口 NAND，Winbond W29N02KV 256 MiB）"
-              echo "- **会替换引导程序**，附件 \`preloader.bin\` 与 \`bl31-uboot.fip\` 需经 USB-TTL 刷入（preloader 写在 NAND 0x800）"
-              echo "- 附件 \`*-recovery.itb\` 为 initramfs 救援镜像"
-              echo "- 自带网页救砖（Airoha Web U-Boot），按住 reset 上电、引导失败或引导菜单第 9 项进入"
-              echo "- LAN1 为 2.5G（GPY211），LAN2~4 为千兆；PON 光口未支持"
-              echo "- 没有出厂 MAC，网口使用随机 MAC"
-              echo "- 闪存按 ECC4、每扇区 spare 28 读写，与 pbs05/uboot-an758x 的 BL2、U-Boot 相同：从 pbs05 迁移可以不重建 UBI"
-              echo "- **从原厂迁移，首次进网页 U-Boot 必须勾「重建 UBI」**，连同固件与 FIP 一次写完：原厂是 ECC8 另一种码字，本 U-Boot 读不出（开机反复报 \`ECC error\`）"
-              echo "- **装过本项目 ECC8 版本的机器，不能在旧版网页里「引导升级」**：旧 U-Boot 按 ECC8 写 fip，新 BL2 按 ECC4 读不出、起不来。要像首次迁移一样经串口传入新的 preloader 与 fip，再在新版网页里勾「重建 UBI」连同固件一起写（先备份 factory 卷）"
-              echo "- 改为 ECC4 后尚待实机验证"
-              ;;
-          esac
-          echo LAYOUTEOF
-        } >> $GITHUB_ENV
-        echo "SOURCE_REPO=$SOURCE_REPO" >> $GITHUB_ENV
-        echo "DEVICE_TARGET=$DEVICE_TARGET" >> $GITHUB_ENV
-        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
         echo "MODEL_TAG=$MODEL_TAG" >> $GITHUB_ENV
-        echo "RELEASE_TAG=${MODEL_TAG}-${FLAVOR}-$DRAM_SIZE-$(date +"%Y%m%d")-${{ github.run_number }}" >> $GITHUB_ENV
-        # 正式发布只有一种：main 上的 workflow 编 master-airoha，发布方式选 auto。
-        # 它盖 Latest、进教程的下载列表、更新选包索引。
-        # 其余构建默认只传 Artifact：Release 列表按 tag 所指提交的日期排序，
-        # 开发分支的提交更新，发成 pre-release 也会顶到列表最前面。
-        # 确实要让别人下载时选 prerelease，发 Release 但不盖 Latest。
-        # workflow 本身也得是 main 上的那份：从开发分支触发时，Release 说明、
-        # 配置文件都还没进主线，不能盖掉 Latest。
-        OFFICIAL=false
-        [ "$REPO_BRANCH" = "master-airoha" ] && [ "${{ github.ref_name }}" = "main" ] && OFFICIAL=true
-        case "$RELEASE_MODE" in
-          auto)       PUBLISH_RELEASE=$OFFICIAL; IS_PRERELEASE=false ;;
-          prerelease) PUBLISH_RELEASE=true;      IS_PRERELEASE=true ;;
-          artifact)   PUBLISH_RELEASE=false;     IS_PRERELEASE=true ;;
-          *) echo "::error::不支持的 release=$RELEASE_MODE"; exit 1 ;;
-        esac
-        # 不发 Release 的构建也不算正式发布，选包页据此跳过
-        [ "$PUBLISH_RELEASE" = "true" ] || IS_PRERELEASE=true
-        echo "PUBLISH_RELEASE=$PUBLISH_RELEASE" >> $GITHUB_ENV
-        echo "IS_PRERELEASE=$IS_PRERELEASE" >> $GITHUB_ENV
-        echo "发布方式: $RELEASE_MODE → Release=$PUBLISH_RELEASE pre-release=$IS_PRERELEASE"
-        # 自适应：只放开 usable 上限，memory 留给 U-Boot 探测后 fixup 进 DTB
+        echo "DEVICE_SUBTARGET=$DEVICE_SUBTARGET" >> $GITHUB_ENV
+        echo "FLAVOR=$DEVICE_VARIANT" >> $GITHUB_ENV
+        echo "VARIANT_LABEL=$DEVICE_VARIANT" >> $GITHUB_ENV
+        echo "RELEASE_TAG=${MODEL_TAG}-${DEVICE_VARIANT}-$DRAM_SIZE-$(date +"%Y%m%d")-${{ github.run_number }}" >> $GITHUB_ENV
+
         if [ "$DRAM_SIZE" = "auto" ]; then
           echo "DRAM_LABEL=自适应" >> $GITHUB_ENV
         else
           echo "DRAM_LABEL=$DRAM_SIZE" >> $GITHUB_ENV
         fi
-        {
-          echo 'DRAM_NOTE<<DRAMNOTEEOF'
-          if [ "$DRAM_SIZE" = "auto" ]; then
-            echo "- **容量自适应**：U-Boot 探测出实际颗粒后 fixup 进 DTB，\`usable-memory-range\` 放开到 2G 不裁剪"
-            echo "- 除 \`stock\` 外的变体都会做这个探测 —— **512M / 1G / 2G 机器可刷同一份固件**"
-            echo "- \`stock\` 变体用原厂引导程序，是否 fixup 未经验证；若用 stock 且换过颗粒，请改选对应容量重新编译"
-          else
-            echo "- 本固件把系统**上限**限制在 **$DRAM_SIZE**（改的是 \`linux,usable-memory-range\`）"
-            echo "- 这只会往小里裁：刷进更小颗粒的机器不会出事，只是不生效；刷进更大颗粒的机器会浪费掉超出部分"
-            echo "- 只在做对照实验（例如排查某故障是否与高区内存有关）时才需要；平时用默认的「自适应」"
-          fi
-          echo DRAMNOTEEOF
-        } >> $GITHUB_ENV
+
+        echo "使用配置: $CONFIG_FILE    设备: $DEVICE_SYMBOL"
 
     - name: Install Feeds(安装feeds)
       run: |
-        # luci.mk 装 root/ 用的是 `cp -pR`（include/luci.mk），-p 保留权限 ——
-        # 仓库里的文件模式**逐位进固件**。rpcd 只加载 /usr/libexec/rpcd/ 下可执行
-        # 的脚本，所以 644 的 rpcd 脚本会让 luci 页面报
-        #   RPC call to luci.airoha_npu/getStatus failed with error -32000: Object not found
-        # 而编译、打包、manifest 全都正常 —— 又一个「编得过、装得上、就是不工作」。
-        # npu 包出树时就丢过一次执行位（老分支源码树里那份是 755）。
-        bad=""
-        for f in $(find "$GITHUB_WORKSPACE/packages" -type f \
-                        -path '*/root/usr/libexec/rpcd/*' -o \
-                        -type f -path '*/root/etc/init.d/*' 2>/dev/null); do
-          [ -x "$f" ] || bad="$bad ${f#$GITHUB_WORKSPACE/}"
-        done
-        if [ -n "$bad" ]; then
-          echo "::error::以下脚本缺可执行位，装进固件后 rpcd / init 不会加载它们："
-          for f in $bad; do echo "::error::  $f"; done
-          echo "::error::修：git update-index --chmod=+x <文件>"
-          exit 1
-        fi
-
         cd $OPENWRT_PATH
-        # 本仓库 packages/ 下的包（luci-app-airoha-npu）挂成 src-link feed，
-        # 不进源码仓库。feeds.conf 优先于 feeds.conf.default。
         [ -f feeds.conf ] || cp feeds.conf.default feeds.conf
         grep -q "^src-link loong " feeds.conf || \
           echo "src-link loong $GITHUB_WORKSPACE/packages" >> feeds.conf
         ./scripts/feeds update -a
         ./scripts/feeds install -a
 
-    - name: Inject Author Info(写入作者信息)
-      run: |
-        # 在默认 SSH banner 和 /usr/lib/os-release（procd 把 OPENWRT_RELEASE 报成
-        # ubus system.board 的 description，LuCI 概览「固件版本」读的是它）末尾追加
-        # 作者信息。不能用 make FILES=：全量编译读的是源码树里的 files/，FILES 是
-        # ImageBuilder 的接口，写成命令行变量还会盖掉 kmod 打包用的同名变量。
-        python3 "$GITHUB_WORKSPACE/scripts/inject-author-info.py" "$OPENWRT_PATH"
-
     - name: Load Custom Configuration(加载自定义配置)
       run: |
-        # 用 cp 而非 mv：保留带注释的原始配置，供后续生成自定义软件包清单
-        [ -e $CONFIG_FILE ] && cp $CONFIG_FILE $OPENWRT_PATH/.config
         cd $OPENWRT_PATH
-        # 按选定变体改写设备符号：先清掉配置里该 subtarget 的所有设备行，再插入选中的那个
-        # subtarget 随机型变（MD 是 an7581，MF 是 an7583），不能写死
-        sed -i "/^CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_/d" .config
-        sed -i "/^# CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_/d" .config
-        sed -i "/^CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}=y/a CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_${DEVICE_SYMBOL}=y" .config
-        grep -q "^CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_${DEVICE_SYMBOL}=y" .config \
-          || { echo "::error::设备符号写入失败: $DEVICE_SYMBOL"; exit 1; }
-        # 附加软件包：由选包页生成、经 workflow_dispatch 输入的一串包名
-        #   pkg  → 编入固件      -pkg → 从基础配置中剔除
-        # 这里只改写 .config，依赖交给随后的 defconfig 补全，是否真生效在下一步核对
-        python3 - <<'PY'
-        import os, re, sys
-        raw = os.environ.get("EXTRA_PACKAGES") or ""
-        add, rm, bad = [], [], []
-        for t in re.split(r"[\s,]+", raw.strip()):
-            if not t:
-                continue
-            neg = t.startswith("-")
-            n = t[1:] if neg else t
-            if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$", n):
-                bad.append(t)
-            elif neg:
-                rm.append(n)
-            else:
-                add.append(n)
-        if bad:
-            print("::error::非法软件包名: %s" % " ".join(bad))
-            sys.exit(1)
-        # 先把该符号已有的行全部删掉（=y / =m / is not set），再按意图追加，
-        # 免得同一个包在配置里留下两条互相矛盾的记录
-        targets = set(add) | set(rm)
-        kept = []
-        for ln in open(".config", encoding="utf-8").read().splitlines():
-            m = re.match(r"^(?:# )?CONFIG_PACKAGE_(\S+?)(?:=[ymn]| is not set)\s*(?:#.*)?$", ln)
-            if m and m.group(1) in targets:
-                continue
-            kept.append(ln)
-        kept += ["CONFIG_PACKAGE_%s=y" % n for n in add]
-        kept += ["# CONFIG_PACKAGE_%s is not set" % n for n in rm]
-        open(".config", "w", encoding="utf-8").write("\n".join(kept) + "\n")
-        # 同一步内 GITHUB_ENV 还没生效，另写一份 sh 供本步 source
-        with open(os.environ["RUNNER_TEMP"] + "/extra.sh", "w", encoding="utf-8") as f:
-            f.write('export EXTRA_ADD="%s"\n' % " ".join(add))
-            f.write('export EXTRA_RM="%s"\n' % " ".join(rm))
-        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-            f.write("EXTRA_ADD=%s\n" % " ".join(add))
-            f.write("EXTRA_RM=%s\n" % " ".join(rm))
-        print("附加软件包 追加: %s" % (" ".join(add) or "(无)"))
-        print("附加软件包 移除: %s" % (" ".join(rm) or "(无)"))
-        PY
-        . "$RUNNER_TEMP/extra.sh"
-        # dae 依赖 kmod-xdp-sockets-diag（要 KERNEL_XDP_SOCKETS），运行还要 BTF 与 BPF_EVENTS；
-        # 这几项在 airoha 上默认全关，不补的话 defconfig 会把 dae 连同 geoip/geosite/luci 一起丢掉。
-        # 只在选了 dae 时才开：BTF 会让内核变大，还要多编 pahole 和 LLVM
-        for p in $EXTRA_ADD; do
-          case "$p" in dae|dae-*|luci-app-dae) NEED_BPF=1 ;; esac
-        done
-        if [ -n "$NEED_BPF" ]; then
-          for s in DEBUG_INFO DEBUG_INFO_REDUCED DEBUG_INFO_BTF BPF_EVENTS XDP_SOCKETS; do
-            sed -i -E "/^(# )?CONFIG_KERNEL_${s}(=| is not set)/d" .config
+        cp $GITHUB_WORKSPACE/$CONFIG_FILE .config
+
+        # 处理附加软件包
+        if [ -n "$EXTRA_PACKAGES" ]; then
+          for pkg in $EXTRA_PACKAGES; do
+            if [[ "$pkg" == -* ]]; then
+              echo "CONFIG_PACKAGE_${pkg#-}=n" >> .config
+            else
+              echo "CONFIG_PACKAGE_${pkg}=y" >> .config
+            fi
           done
-          cat >> .config <<'EOF'
-        CONFIG_KERNEL_DEBUG_INFO=y
-        # CONFIG_KERNEL_DEBUG_INFO_REDUCED is not set
-        CONFIG_KERNEL_DEBUG_INFO_BTF=y
-        CONFIG_KERNEL_BPF_EVENTS=y
-        CONFIG_KERNEL_XDP_SOCKETS=y
-        EOF
-          echo "已为 dae 打开内核 BTF / BPF_EVENTS / XDP_SOCKETS"
         fi
+
         make defconfig
-        grep -q "^CONFIG_TARGET_airoha_${DEVICE_SUBTARGET}_DEVICE_${DEVICE_SYMBOL}=y" .config \
-          || { echo "::error::defconfig 后设备符号丢失，$DEVICE_SYMBOL 在该源码分支中可能不存在"; exit 1; }
-        echo "已选定设备: $DEVICE_SYMBOL"
-        grep "CONFIG_PACKAGE_luci-app-airoha-npu" .config || echo "WARNING: option missing!"
-        # 核对附加软件包是否真进了配置。包名拼错、或该分支根本没这个包时，
-        # make defconfig 会静默丢掉对应行；不核对就得等一两小时编完才发现漏装
-        python3 - <<'PY'
-        import os, re, sys
-        cfg = open(".config", encoding="utf-8").read()
-        def state(n):
-            for v in ("y", "m"):
-                if re.search(r"^CONFIG_PACKAGE_%s=%s$" % (re.escape(n), v), cfg, re.M):
-                    return v
-            if re.search(r"^# CONFIG_PACKAGE_%s is not set$" % re.escape(n), cfg, re.M):
-                return "n"
-            return "?"
-        fail = [n for n in os.environ.get("EXTRA_ADD", "").split()
-                if state(n) not in ("y", "m")]
-        for n in os.environ.get("EXTRA_RM", "").split():
-            if state(n) in ("y", "m"):
-                print("::warning::%s 被其它已选软件包依赖，无法移除，仍会编入固件" % n)
-        if fail:
-            print("::error::以下附加软件包未能加入配置，请核对包名是否属于本分支：")
-            for n in fail:
-                print("::error::  %s" % n)
-            sys.exit(1)
-        PY
-        # 供 Release 正文引用；没有输入时也要有一行占位，否则正文里会留个空条目
-        {
-          echo 'EXTRA_NOTE<<EXTRANOTEEOF'
-          if [ -n "$EXTRA_ADD" ]; then echo "- 追加：\`$EXTRA_ADD\`"; fi
-          if [ -n "$EXTRA_RM" ]; then echo "- 移除：\`$EXTRA_RM\`"; fi
-          if [ -z "$EXTRA_ADD$EXTRA_RM" ]; then echo "- 本次未指定附加软件包"; fi
-          echo EXTRANOTEEOF
-        } >> $GITHUB_ENV
 
-    - name: Toolchain Cache Key(计算工具链缓存键)
-      if: env.CACHE_TOOLCHAIN == 'true'
+    - name: Download Package(下载软件包)
       run: |
         cd $OPENWRT_PATH
-        # 工具链缓存按 .config 里决定 host 工具与交叉工具链的选项来分，不按机型、
-        # 子目标或源码分支分。所以这一步和下面的缓存必须在 make defconfig 之后。
-        # - 这些值相同的机型共用一份（现在 4 台都是 airoha / aarch64_cortex-a53 / 6.18）
-        # - 换 board、架构、内核大版本、gcc、libc 时键跟着变。工具链里带内核头文件，
-        #   而升级内核改的是 target/ 与 include/；cachewrtbuild 自己只在键里加
-        #   tools/、toolchain/ 最近一次提交，看不到内核变化，命中后又会跳过工具链的编译
-        # - 按条件编译的 host 工具（tools/Makefile）对应的选项也一并纳入
-        RE='^CONFIG_(TARGET_BOARD|TARGET_ARCH_PACKAGES|TARGET_OPTIMIZATION|TARGET_SUFFIX|ARCH|CPU_TYPE|LINUX_[0-9_]+=|GCC_|BINUTILS_|LIBC=|USE_(MUSL|GLIBC|MOLD|LLVM_BUILD|SPARSE)|EXTERNAL_TOOLCHAIN|TOOLCHAINOPTS|EXTRA_OPTIMIZATION|SOFT_FLOAT|CCACHE|BUILD_ALL_HOST_TOOLS|SDK|TARGET_INITRAMFS_COMPRESSION_|EFI_IMAGES|DWARVES|USES_MINOR)'
-        LINES=$(grep -E "$RE" .config | sort)
-        echo "::group::参与缓存键的配置"
-        echo "$LINES"
-        echo "::endgroup::"
-        ARCHPKG=$(sed -n 's/^CONFIG_TARGET_ARCH_PACKAGES="\(.*\)"$/\1/p' .config)
-        [ -n "$ARCHPKG" ] || { echo "::error::.config 里没有 CONFIG_TARGET_ARCH_PACKAGES"; exit 1; }
-        KEY="$ARCHPKG-$(printf '%s\n' "$LINES" | sha256sum | cut -c1-12)"
-        echo "工具链缓存键: $KEY"
-        echo "TOOLCHAIN_KEY=$KEY" >> $GITHUB_ENV
+        make download -j$(nproc) || make download -j1 V=s
 
-    - name: Cache Toolchain(缓存工具链)
-      if: env.CACHE_TOOLCHAIN == 'true'
-      # 从没发过版本，固定到提交；升级时看它的提交记录再换
-      uses: HiGarfield/cachewrtbuild@3c396d6d42253c392a1c7c2ca996869c3d5b5853 # main 2026-05-02
-      with:
-        ccache: false
-        mixkey: ${{ env.SOURCE_REPO }}-${{ env.TOOLCHAIN_KEY }}
-        prefix: ${{ env.OPENWRT_PATH }}
-
-    - name: Override Package Versions(覆盖软件包版本)
-      run: |
-        cd $OPENWRT_PATH
-        python3 - <<'PY'
-        import glob, hashlib, os, re, subprocess, sys
-
-        # 提前 return 会漏写 PKG_VER_NOTE，让 Release 正文里空出一段，所以一路走到底
-        # 两个来源：仓库里的 pkg-versions.txt 管长期固定的，workflow 输入管这一次，后者覆盖前者
-        want = {}
-        cfg = os.path.join(os.environ["GITHUB_WORKSPACE"], "config/pkg-versions.txt")
-        if not os.path.exists(cfg):
-            print("没有 config/pkg-versions.txt")
-        else:
-            for lineno, raw in enumerate(open(cfg, encoding="utf-8"), 1):
-                ln = raw.split("#")[0].strip()
-                if not ln:
-                    continue
-                f = ln.split()
-                if len(f) != 2:
-                    sys.exit("::error::pkg-versions.txt 第 %d 行应为 <包名> <版本>: %s" % (lineno, ln))
-                want[f[0]] = (f[1], "pkg-versions.txt")
-
-        for tok in re.split(r"[\s,]+", (os.environ.get("PKG_VERSIONS") or "").strip()):
-            if not tok:
-                continue
-            if tok.count("=") != 1 or tok.startswith("=") or tok.endswith("="):
-                sys.exit("::error::pkg_versions 输入应为 <包名>=<版本>，多个用空格分隔: %s" % tok)
-            k, v = tok.split("=")
-            if k in want and want[k][0] != v:
-                print("%-18s 输入覆盖文件设定（%s -> %s）" % (k, want[k][0], v))
-            want[k] = (v, "本次指定")
-
-        if not want:
-            print("没有要覆盖版本的软件包")
-
-        def sha256(path):
-            h = hashlib.sha256()
-            with open(path, "rb") as fp:
-                for blk in iter(lambda: fp.read(1 << 20), b""):
-                    h.update(blk)
-            return h.hexdigest()
-
-        done, targets = [], []
-        for pkg, (ver, origin) in want.items():
-            mks = glob.glob("feeds/*/*/%s/Makefile" % pkg) or glob.glob("feeds/*/*/*/%s/Makefile" % pkg)
-            if not mks:
-                sys.exit("::error::feeds 里找不到软件包 %s" % pkg)
-            mk = mks[0]
-            feed = mk.split("/")[1]
-            body = open(mk, encoding="utf-8").read()
-
-            if re.search(r"^PKG_SOURCE_PROTO:=\s*git", body, re.M):
-                sys.exit("::error::%s 是 git 源，本机制只支持 tarball 源"
-                         "（git 源要改的是 PKG_SOURCE_VERSION 与 PKG_MIRROR_HASH）" % pkg)
-            m = re.search(r"^PKG_VERSION:=(.*)$", body, re.M)
-            if not m:
-                sys.exit("::error::%s 的 Makefile 里没有 PKG_VERSION" % pkg)
-            if not re.search(r"^PKG_HASH:=", body, re.M):
-                sys.exit("::error::%s 的 Makefile 里没有 PKG_HASH" % pkg)
-            cur = m.group(1).strip()
-            if cur == ver:
-                print("%-18s 已经是 %s，跳过" % (pkg, ver))
-                continue
-
-            print("%-18s %s -> %s" % (pkg, cur, ver))
-            # 先以 skip 下载一次，拿到实际 tarball 才能算出正确的 PKG_HASH
-            draft = re.sub(r"^PKG_VERSION:=.*$", "PKG_VERSION:=" + ver, body, count=1, flags=re.M)
-            draft = re.sub(r"^PKG_HASH:=.*$", "PKG_HASH:=skip", draft, count=1, flags=re.M)
-            open(mk, "w", encoding="utf-8").write(draft)
-
-            target = "package/feeds/%s/%s/download" % (feed, pkg)
-            before = set(os.listdir("dl")) if os.path.isdir("dl") else set()
-            r = subprocess.run(["make", target, "V=s"], capture_output=True, text=True)
-            if r.returncode != 0:
-                print(r.stdout[-3000:])
-                print(r.stderr[-3000:])
-                sys.exit("::error::%s %s 下载失败，多半是上游没有这个 tag" % (pkg, ver))
-
-            got = [g for g in sorted(set(os.listdir("dl")) - before) if not g.endswith(".hash")]
-            src = re.search(r"^PKG_SOURCE:=(.*)$", draft, re.M)
-            if src:
-                exp = src.group(1).strip().replace("$(PKG_NAME)", pkg).replace("$(PKG_VERSION)", ver)
-                got = [g for g in got if g == exp] or got
-            if len(got) != 1:
-                sys.exit("::error::%s 下载后无法确定主源码包: %s" % (pkg, " ".join(got) or "(无新文件)"))
-
-            digest = sha256(os.path.join("dl", got[0]))
-            open(mk, "w", encoding="utf-8").write(
-                re.sub(r"^PKG_HASH:=.*$", "PKG_HASH:=" + digest, draft, count=1, flags=re.M))
-            # 写回真实哈希后再跑一次，确认校验能过
-            if subprocess.run(["make", target], capture_output=True, text=True).returncode != 0:
-                sys.exit("::error::%s 写回 PKG_HASH 后校验失败" % pkg)
-            print("  %s  sha256=%s" % (got[0], digest))
-            done.append((pkg, cur, ver, origin))
-            targets.append("package/feeds/%s/%s" % (feed, pkg))
-
-        note = ["- %s：`%s` → `%s`（%s）" % d for d in done] or ["- 本次未覆盖任何软件包版本"]
-        with open(os.environ["GITHUB_ENV"], "a", encoding="utf-8") as f:
-            f.write("PKG_VER_NOTE<<PKGVEREOF\n" + "\n".join(note) + "\nPKGVEREOF\n")
-            # 换了版本的包先单独编一遍，编不过就立刻退出，不必等一两小时的整体编译
-            f.write("PKG_VER_TARGETS=%s\n" % " ".join(targets))
-        PY
-
-    - name: Download DL Package(下载DL软件包)
-      run: |
-        cd $OPENWRT_PATH
-        make download -j8
-        find dl -size -1024c -exec ls -l {} \;
-        find dl -size -1024c -exec rm -f {} \;
-
-    - name: Precompile Overridden Packages(先编被覆盖的包)
-      if: env.PKG_VER_TARGETS != ''
-      run: |
-        cd $OPENWRT_PATH
-        # 换过版本的包在整体编译序列里排得靠后，编不过要等一两小时才暴露，这里先单独编一遍。
-        #
-        # 必须先把内核编出来：目标包的依赖链里往往有内核模块（sing-box 就依赖 kmod-tun、
-        # kmod-nft-tproxy），而 kmod 要等 target/linux 编完才有 build_dir 可用，否则会是
-        # "No rule to make target .../build_dir/..."，看着像目标包的错，其实不是。
-        # 内核与工具链整体编译本来也要编，不会重复，成功时不额外增加总时长。
-        echo "::group::先编内核（目标包的 kmod 依赖需要它）"
-        make -j$(nproc) target/linux/compile || make -j1 V=s target/linux/compile
-        echo "::endgroup::"
-        for t in $PKG_VER_TARGETS; do
-          echo "::group::$t"
-          make "$t/compile" -j$(nproc) || {
-            echo "::error::$t 编译失败 —— 换的版本与 feed 里的 Makefile 不匹配，下面是单线程重跑的详细日志"
-            make "$t/compile" -j1 V=s
-            exit 1
-          }
-          echo "::endgroup::"
-        done
-
-    - name: Compile Firmware(开始编译固件)
+    - name: Compile Firmware(编译固件)
       id: compile
       run: |
         cd $OPENWRT_PATH
-        echo -e "$(nproc) thread compile"
-        # 失败时单线程带 V=s 接着编一次：偶发的并行竞争会就此编过，
-        # 真错误会停在第一个出错的包上，并打出完整日志
+        echo "开始编译..."
         make -j$(nproc) || make -j1 V=s
         echo "status=success" >> $GITHUB_OUTPUT
-        echo "DATE=$(date +"%Y-%m-%d %H:%M:%S")" >> $GITHUB_ENV
-        echo "FILE_DATE=$(date +"%Y.%m.%d")" >> $GITHUB_ENV
-
-    - name: DTB Baseline Check(设备树基准比对)
-      # 只对整理后的 master-airoha 线跑；老分支不受影响。
-      # 只读 build_dir，不动源码树，因此每次编译都跑。
-      # 刻意不 fail 整个流程 —— 这是「提醒去看」，不是「构建坏了」。
-      if: steps.compile.outputs.status == 'success'
-      continue-on-error: true
-      run: |
-        sudo apt-get install -y device-tree-compiler >/dev/null 2>&1 || true
-        # 抓「dts 编得过、刷进去没网、日志无声」那一类
-        #（25.12 线的 pcs -> pcs-handle 就是这么漏过去的）
-        if ! bash "$GITHUB_WORKSPACE/scripts/check-drift.sh" dtb -o "$OPENWRT_PATH" > dtb.log 2>&1; then
-          echo "::warning::dtb 与 golden 基准不一致，详见下方"
-        fi
-        cat dtb.log
-
-    - name: Patch Fuzz Check(补丁偏移检查)
-      # 默认关闭：这一项要 clean + 重新 prepare uboot-airoha 与内核，会改动源码树，
-      # 也会让 cachewrtbuild 缓存下来的已 prepare 状态失效，下次编译得重做一遍。
-      # 需要时在 Run workflow 里勾上；本地随时可跑 ./scripts/check-drift.sh refresh。
-      #
-      # 必须放在 DTB 检查之后 —— target/linux/clean 会把 build_dir 里的 dtb 删掉。
-      if: |
-        steps.compile.outputs.status == 'success'
-       
-        && github.event.inputs.run_refresh_check == 'true'
-      continue-on-error: true
-      run: |
-        # OpenWrt 打补丁走 patch -f -p1：整块 reject 才让构建失败，offset 与
-        # fuzz<=2 是静默成功的。quilt refresh 按实际落位重写补丁，偏了就现形。
-        if ! bash "$GITHUB_WORKSPACE/scripts/check-drift.sh" refresh -o "$OPENWRT_PATH" > refresh.log 2>&1; then
-          echo "::warning::有补丁被 quilt refresh 改写（打上去时有 offset/fuzz），详见下方"
-        fi
-        tail -100 refresh.log
-
-    - name: Upload Drift Artifacts(上传漂移检查产物)
-      if: steps.compile.outputs.status == 'success'
-      continue-on-error: true
-      uses: actions/upload-artifact@v7
-      with:
-        name: drift-${{ github.run_number }}-${{ matrix.device }}
-        # golden/ 首次是脚本新写进去的基准，review 后提交进仓库
-        path: |
-          dtb.log
-          refresh.log
-          golden/
-        if-no-files-found: ignore
-
-    - name: Check Space Usage(检查空间使用情况)
-      if: (!cancelled())
-      run: df -hT
-
-    - name: Upload Bin Directory(上传固件)
-      if: steps.compile.outputs.status == 'success' && env.UPLOAD_BIN_DIR == 'true'
-      uses: actions/upload-artifact@v7
-      with:
-        name: ${{ env.SOURCE_REPO }}-bin-${{ env.DEVICE_TARGET }}-${{ env.DEVICE_SUBTARGET }}-${{ env.FILE_DATE }}
-        path: ${{ env.OPENWRT_PATH }}/bin
+        echo "FIRMWARE_PATH=$OPENWRT_PATH/bin/targets/$DEVICE_TARGET/$DEVICE_SUBTARGET" >> $GITHUB_ENV
 
     - name: Organize Files(整理文件)
       if: steps.compile.outputs.status == 'success'
       run: |
-        cd $OPENWRT_PATH/bin/targets/*/*
-        cat sha256sums
-        echo "VERSION_KERNEL=$(find -type f -name "*.manifest" -exec grep -oP '^kernel - \K.*?(?=~|-\d+-)' {} \;)" >> $GITHUB_ENV
-        cp $OPENWRT_PATH/.config build.config
-        mv -f $OPENWRT_PATH/bin/packages/*/*/*.apk packages
-        tar -zcf Packages.tar.gz packages
-        rm -rf packages feeds.buildinfo version.buildinfo
-        echo "FIRMWARE_PATH=$PWD" >> $GITHUB_ENV
+        cd $FIRMWARE_PATH
+        mkdir -p $GITHUB_WORKSPACE/firmware
+        cp -rf * $GITHUB_WORKSPACE/firmware/ || true
+        echo "整理完成"
 
-    - name: Generate Custom Package List(生成自定义软件包清单)
+    - name: Upload Firmware To Artifact(上传固件)
       if: steps.compile.outputs.status == 'success'
-      run: |
-        SRC="$GITHUB_WORKSPACE/$CONFIG_FILE"
-        OUT="$FIRMWARE_PATH/custom-packages.txt"
-        [ -e "$SRC" ] || { echo "::error::未找到配置文件 $SRC"; exit 1; }
-        {
-          echo "$MODEL_TAG 自定义软件包清单"
-          echo "=================================================================="
-          echo "固件版本 : $RELEASE_TAG"
-          echo "编译分支 : $REPO_BRANCH"
-          echo "内核版本 : $VERSION_KERNEL"
-          echo "内存容量 : $DRAM_LABEL"
-          echo "设备定义 : $DEVICE_SYMBOL"
-          echo "编译时间 : $DATE"
-          echo
-          echo "说明"
-          echo "----"
-          echo "* 下列为 $CONFIG_FILE 中显式勾选的软件包；"
-          echo "  它们的依赖由 make defconfig 自动补全，未在此列出。"
-          echo "* 固件实际安装的完整软件包列表见同目录下的 *.manifest 文件。"
-          echo "* 本次编译使用的完整内核配置见同目录下的 build.config。"
-          awk '
-            $0 == "#" {
-              if (pend != "") { hdr = pend; pend = "" } else { expect = 1 }
-              next
-            }
-            expect == 1 && substr($0, 1, 2) == "# " {
-              pend = substr($0, 3); expect = 0; next
-            }
-            {
-              expect = 0
-              if ($0 !~ /^CONFIG_(PACKAGE|DEFAULT)_[^=]+=y[ \t]*(#.*)?$/) next
-              line = $0; comment = ""
-              i = index(line, "#")
-              if (i > 0) {
-                comment = substr(line, i + 1)
-                sub(/^[ \t]+/, "", comment)
-                line = substr(line, 1, i - 1)
-              }
-              sub(/[ \t]+$/, "", line)
-              sub(/=y$/, "", line)
-              sub(/^CONFIG_PACKAGE_/, "", line)
-              sub(/^CONFIG_DEFAULT_/, "", line)
-              if (hdr != "") { printf "\n【%s】\n", hdr; hdr = ""; last = "" }
-              norm = line; gsub(/-/, "_", norm)
-              # 形如 dnsmasq_full_dnssec / luci-app-passwall_INCLUDE_Xray 的下划线子选项，归到
-              # 上一个包名之下；kmod-usb-storage-uas 这类连字符独立包不受影响
-              if (last != "" && index(norm, last "_") == 1 && substr(line, length(last) + 1, 1) == "_") {
-                opt = substr(norm, length(last) + 2)
-                sub(/^INCLUDE_/, "", opt)
-                name = "    └ " opt
-              } else {
-                last = norm
-                name = "  " line
-              }
-              if (comment != "") printf "%-46s # %s\n", name, comment
-              else printf "%s\n", name
-            }
-          ' "$SRC"
-          if [ -n "$EXTRA_ADD$EXTRA_RM" ]; then
-            echo
-            echo "【本次构建的附加软件包】"
-            echo "（由 workflow 的 extra_packages 输入指定，不在 $CONFIG_FILE 中）"
-            for p in $EXTRA_ADD; do echo "  + $p"; done
-            for p in $EXTRA_RM;  do echo "  - $p  已从基础配置中剔除"; done
-          fi
-          echo
-          echo "使用注意"
-          echo "--------"
-          echo "* Passwall 与 OpenClash 不要同时启用，两者都会接管 nftables 规则链与 dnsmasq 配置。"
-          echo "* dnsmasq / SmartDNS / AdGuardHome 默认均监听 53 端口，刷机后需手动规划端口分配。"
-          if [ "$DRAM_SIZE" = "auto" ]; then
-            echo "* 本固件内存容量自适应，由引导程序探测上报；除 stock 外的变体可通刷 512M / 1G / 2G 机器。"
-          else
-            echo "* 本固件的 DTS 已按 $DRAM_SIZE 内存颗粒写死，请勿刷入更小容量颗粒的机器。"
-          fi
-        } > "$OUT"
-        echo "--- $OUT ---"
-        cat "$OUT"
-
-    - name: Pack Bootloader Kit(打包引导程序套件)
-      if: steps.compile.outputs.status == 'success'
-      run: |
-        set -euo pipefail
-        cd "$FIRMWARE_PATH"
-
-        BL2=$(ls -1 *-preloader.bin 2>/dev/null | head -n1 || true)
-        FIP=$(ls -1 *-bl31-uboot.fip 2>/dev/null | head -n1 || true)
-        if [ -z "$BL2" ] || [ -z "$FIP" ]; then
-          echo "::notice::$VARIANT_LABEL 变体保留原厂引导，没有 preloader/fip，跳过本步"
-          exit 0
-        fi
-        echo "BL2=$BL2"
-        echo "FIP=$FIP"
-
-        # ---------------------------------------------------------------
-        # 一、tcboot-to-ubi-uboot.bin
-        #
-        # 给「已经刷了第三方 tcboot 引导」的机器用的不拆机迁移镜像：从物理
-        # 偏移 0 起的连续字节流，喂给 tcboot web 界面的 spinand 端点（内部是
-        # mtd erase spi-nand0 + mtd write spi-nand0 <addr> 0x0 <len>，写裸
-        # 设备、不过问分区名）。
-        #
-        #   0x00000  0xff × 0x800        BootROM 在 0x800 找 FIP 头
-        #   0x00800  preloader.bin       我们的 BL2
-        #   0x20000  UBI 镜像            含 static 卷 fip = bl31-uboot.fip
-        #
-        # 只写 BL2 是必砖：BL2 按卷名去 UBI 里找 fip，而 tcboot 的 ubi 起点
-        # 在 0x100000、我们的在 0x20000，挂不上就停在 No volume named fip。
-        # 几何取自镜像定义（BLOCKSIZE := 128k / PAGESIZE := 2048），五个机型一致。
-        #
-        # 不加 ubinize 的 -E（EOF 标记块）。那是让 BL2 提前结束扫描的优化，
-        # 在这里会变砖：UBI 改卷表是换一个 PEB 重写、再放掉旧的，首次启动跑完
-        # _init_env 建出 ubootenv 之后卷表就搬到标记块后面，下次上电 BL2 扫到
-        # 标记停手，卷表在范围外 -> No volume named fip，只能接串口。正常迁移
-        # 出来的机器（ubi_format 建的 UBI）本来也没有标记，BL2 每次全片扫。
-        # ---------------------------------------------------------------
-        UBINIZE="$OPENWRT_PATH/staging_dir/host/bin/ubinize"
-        [ -x "$UBINIZE" ] || UBINIZE=$(command -v ubinize || true)
-        if [ -z "$UBINIZE" ]; then
-          echo "::error::找不到 ubinize（需要带 OpenWrt -E 补丁的那个）"
-          exit 1
-        fi
-
-        WORK=$(mktemp -d)
-        cat > "$WORK/fip.cfg" <<EOF
-        [fip]
-        mode=ubi
-        vol_id=0
-        vol_type=static
-        vol_name=fip
-        vol_size=1MiB
-        image=$PWD/$FIP
-        EOF
-        "$UBINIZE" -o "$WORK/ubi.img" -p 128KiB -m 2048 \
-          ${SOURCE_DATE_EPOCH:+-Q $SOURCE_DATE_EPOCH} "$WORK/fip.cfg"
-
-        # 和 sysupgrade.itb 等产物同前缀，一眼看得出是哪个机型的
-        MIGRATE="${BL2%-preloader.bin}-tcboot-to-ubi-uboot.bin"
-        python3 - "$BL2" "$WORK/ubi.img" "$MIGRATE" <<'PY'
-        import sys
-        bl2_path, ubi_path, out_path = sys.argv[1:4]
-        BL2_PART, BL2_OFF = 0x20000, 0x800          # bl2 分区 0x0-0x20000
-        bl2 = open(bl2_path, 'rb').read()
-        if bl2[:4] != b'\x01\x00\x64\xaa':
-            sys.exit('preloader 开头不是 FIP 容器头 01 00 64 aa')
-        room = BL2_PART - BL2_OFF
-        if len(bl2) > room:
-            sys.exit('preloader 有 %d 字节，超过 bl2 分区自 0x800 起的 %d' % (len(bl2), room))
-        blk = b'\xff' * BL2_OFF + bl2 + b'\xff' * (room - len(bl2))
-        ubi = open(ubi_path, 'rb').read()
-        open(out_path, 'wb').write(blk + ubi)
-        print('%s: %d 字节（bl2 块 %d + UBI %d）' % (out_path, len(blk) + len(ubi), len(blk), len(ubi)))
-        PY
-
-        # ---------------------------------------------------------------
-        # 网页生成器必须和真 ubinize 产出同一份字节
-        #
-        # guide/migrate-image.html 在浏览器里重跑了一遍 ubinize，给手里已经
-        # 有引导文件、或想用旧版本的人用。它写错了就是让用户变砖，所以这里
-        # 拿本次真实编译出来的 preloader/fip 当场对一遍：从 ubinize 的产物里
-        # 取 image_seq（ubinize 默认随机），喂给网页那份生成器，逐字节比。
-        # 发行版自带的 ubinize 没有 -E，在别处复现不了这个比对。
-        # ---------------------------------------------------------------
-        GEN="$WORK/gen.mjs"
-        python3 - "$GITHUB_WORKSPACE/guide/migrate-image.html" "$GEN" <<'PY'
-        import re, sys
-        src, out = sys.argv[1:3]
-        h = open(src, encoding='utf-8').read()
-        m = re.search(r"<script>\n'use strict';\n(.*?)</script>", h, re.S)
-        if not m:
-            sys.exit('migrate-image.html 里找不到生成器脚本')
-        js = m.group(1)
-        i = js.find('/* ---------- 界面 ---------- */')
-        if i < 0:
-            sys.exit('migrate-image.html 里找不到「界面」分界注释')
-        open(out, 'w', encoding='utf-8').write(js[:i] + '\nexport { build };\n')
-        PY
-        SEQ=$(python3 -c "import struct,sys; d=open(sys.argv[1],'rb').read(); print(struct.unpack('>I', d[0x20000+24:0x20000+28])[0])" "$MIGRATE")
-        node --input-type=module -e "
-        import { build } from 'file://$GEN';
-        import { readFileSync, writeFileSync } from 'node:fs';
-        const bl2 = new Uint8Array(readFileSync('$BL2'));
-        const fip = new Uint8Array(readFileSync('$FIP'));
-        const r = build(bl2, fip, { seq: $SEQ, ec: 0, eof: 0, reserve: 0x100000 });
-        writeFileSync('$WORK/from-page.bin', Buffer.from(r.img));
-        console.log('网页生成器：' + r.img.length + ' 字节，' + r.pebs + ' 个 PEB，fip 占 ' + r.usedEbs + ' 个 LEB');
-        "
-        if cmp "$MIGRATE" "$WORK/from-page.bin"; then
-          echo "✓ guide/migrate-image.html 与 ubinize 的产出逐字节相同"
-        else
-          echo "::error::guide/migrate-image.html 生成的镜像与 ubinize 不一致，按它做出来的迁移镜像可能让设备变砖"
-          exit 1
-        fi
-        rm -rf "$WORK"
-
-        # zip 的中文文件名要带 UTF-8 标志位（EFS，bit 11），否则 Windows 上解出来
-        # 是乱码。Info-ZIP 要看编译时有没有 UNICODE_SUPPORT，不同发行版不一样；
-        # python 的 zipfile 对非 ASCII 名字一定会置这个位，用它稳。
-        mkzip() {
-          python3 - "$1" <<'PYZIP'
-        import os, sys, zipfile
-        root = sys.argv[1]
-        with zipfile.ZipFile(root + '.zip', 'w', zipfile.ZIP_DEFLATED) as z:
-            for dirpath, _, files in os.walk(root):
-                for f in sorted(files):
-                    p = os.path.join(dirpath, f)
-                    z.write(p, p)
-        PYZIP
-        }
-
-        # ---------------------------------------------------------------
-        # 二、引导程序 zip：两个引导文件 + 一份链接说明
-        # ---------------------------------------------------------------
-        KIT="$RELEASE_TAG-bootloader"
-        mkdir -p "$KIT"
-        cp "$BL2" "$FIP" "$KIT/"
-
-        {
-          echo "$MODEL_TAG 引导程序（$VARIANT_LABEL 变体）"
-          echo "=================================================================="
-          echo "固件版本 : $RELEASE_TAG"
-          echo "编译分支 : $REPO_BRANCH"
-          echo "编译时间 : $DATE"
-          echo
-          echo "链接"
-          echo "----"
-          echo "  恩山论坛           https://www.right.com.cn/forum/thread-8487590-1-1.html"
-          echo "  Github 工程        https://github.com/Loong1996/ImmortalWrt-Airoha"
-          echo "  刷机教程           https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html"
-          echo "  迁移镜像生成器     https://loong1996.github.io/ImmortalWrt-Airoha/migrate-image.html"
-          echo "  工具入口（选包）   https://loong1996.github.io/ImmortalWrt-Airoha/"
-          echo "  固件下载           https://github.com/Loong1996/ImmortalWrt-Airoha/releases"
-          echo "  固件源码           https://github.com/Loong1996/immortalwrt"
-          echo "  QQ 群              1092754041"
-          echo
-          echo "包里是什么"
-          echo "----------"
-          echo "  $BL2"
-          echo "      BL2（preloader）。BootROM 把它收进片上 SRAM，由它把 DDR 初始化起来。"
-          echo "  $FIP"
-          echo "      BL31 + U-Boot，带网页救砖界面。BL2 把它收进 DRAM。"
-          echo
-          echo "两个都要传，这是硬约束：BootROM 只把 BL2 收进 SRAM，那里放不下 FIP，"
-          echo "它也不解析 FIP 里的 BL33。"
-          echo
-          echo "怎么用"
-          echo "------"
-          echo "* 第一次装（机器还是原厂引导）：接一次 USB-TTL，按住 reset 上电，看到"
-          echo "  Press x 时按 x，用 xmodem 依次传这两个文件，之后全在网页里，"
-          echo "  再也不用串口。完整步骤见上面「刷机教程」的第 2 章。"
-          echo "* 已经在跑网页 U-Boot：直接在恢复页「引导升级」里传这两个文件，"
-          echo "  不要勾「重建 UBI」。"
-          echo "* 机器刷的是第三方 tcboot 引导：不用拆机，用同目录下的"
-          echo "  ${MIGRATE}，"
-          echo "  走 tcboot 自带的 spinand 页整片写入。"
-          echo
-          echo "提醒"
-          echo "----"
-          echo "* 首次迁移勾「重建 UBI」会擦掉出厂 MAC（ri 卷）。刷之前先按指南把原厂"
-          echo "  备份做出来，迁完在恢复页「出厂卷」里把 ri 写回去就能找回来。"
-          echo "* 引导文件按机型编译，不要跨机型刷。本包对应 ${MODEL_TAG}。"
-        } > "$KIT/教程链接.txt"
-
-        mkzip "$KIT"
-        rm -rf "$KIT"
-
-        # ---------------------------------------------------------------
-        # 三、分享包：一个 zip 装齐刷一台机器要用的全部文件
-        #
-        # 只在发 Release 时打。Release 的附件是一个个散着的，群里要发一整套
-        # 得挑半天；只传 Artifact 那条路本来就把整个目录打成一个 zip，再套
-        # 一层纯属重复，还要多传三四十兆。
-        # ---------------------------------------------------------------
-        if [ "${PUBLISH_RELEASE:-false}" = "true" ]; then
-          PACK="$RELEASE_TAG"
-          mkdir -p "$PACK"
-          for f in "$BL2" "$FIP" "$MIGRATE" \
-                   *-initramfs-recovery.itb *-squashfs-sysupgrade.itb *.manifest ; do
-            [ -e "$f" ] && cp "$f" "$PACK/"
-          done
-
-          REL="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
-          {
-            echo "$MODEL_TAG · $RELEASE_TAG"
-            echo "=================================================================="
-            echo "变体     : $VARIANT_LABEL"
-            echo "内存     : $DRAM_LABEL"
-            echo "内核     : $VERSION_KERNEL"
-            echo "编译分支 : $REPO_BRANCH"
-            echo "编译时间 : $DATE"
-            echo
-            echo "链接"
-            echo "----"
-            echo "  本次 Release       $REL"
-            echo "  恩山论坛           https://www.right.com.cn/forum/thread-8487590-1-1.html"
-            echo "  Github 工程        https://github.com/Loong1996/ImmortalWrt-Airoha"
-            echo "  刷机教程           https://loong1996.github.io/ImmortalWrt-Airoha/recovery-guide.html"
-            echo "  tcboot 不拆机迁移  https://loong1996.github.io/ImmortalWrt-Airoha/migrate-image.html"
-            echo "  工具入口（选包）   https://loong1996.github.io/ImmortalWrt-Airoha/"
-            echo "  QQ 群              1092754041"
-            echo
-            echo "包里是什么"
-            echo "----------"
-            echo "  $BL2"
-            echo "      BL2（preloader）。BootROM 收进片上 SRAM，由它初始化 DDR。"
-            echo "  $FIP"
-            echo "      BL31 + U-Boot，带网页救砖界面。BL2 收进 DRAM。"
-            echo "  $MIGRATE"
-            echo "      刷了第三方 tcboot 引导的机器专用，不拆机迁移到网页 U-Boot。"
-            echo "      见上面「tcboot 不拆机迁移」。原厂引导的机器用不到这个。"
-            for f in *-initramfs-recovery.itb ; do
-              [ -e "$f" ] || continue
-              echo "  $f"
-              echo "      内存中运行的救援系统，不写闪存。系统刷坏时从 U-Boot 载入它救场。"
-            done
-            for f in *-squashfs-sysupgrade.itb ; do
-              [ -e "$f" ] || continue
-              echo "  $f"
-              echo "      固件本体。日常刷机、首刷都传这个。"
-            done
-            for f in *.manifest ; do
-              [ -e "$f" ] || continue
-              echo "  $f"
-              echo "      本固件实际安装的完整软件包列表与版本。"
-            done
-            echo
-            echo "先刷哪个"
-            echo "--------"
-            echo "* 机器还是原厂引导：接一次 USB-TTL 串口，按教程第 2 章传 BL2 与 U-Boot，"
-            echo "  之后全在网页里，再也不用串口。"
-            echo "* 机器刷的是第三方 tcboot：不用拆机，直接用 ${MIGRATE}，"
-            echo "  走 tcboot 自带的 spinand 页整片写入。"
-            echo "* 已经在跑网页 U-Boot：浏览器进恢复页，「日常刷机」传固件即可。"
-            echo
-            echo "提醒"
-            echo "----"
-            echo "* 引导文件按机型编译，不要跨机型刷。本包对应 ${MODEL_TAG}。"
-            echo "* 首次迁移勾「重建 UBI」会擦掉出厂 MAC（ri 卷），刷之前先按教程备份原厂。"
-          } > "$PACK/说明与链接.txt"
-
-          mkzip "$PACK"
-          rm -rf "$PACK"
-          ls -l "$PACK.zip"
-          echo "- \`$PACK.zip\` — 分享包，刷一台机器要用的文件都在里面" >> "$GITHUB_STEP_SUMMARY"
-        else
-          echo "::notice::只传 Artifact，整个目录本来就是一个 zip，不再打分享包"
-        fi
-
-        ls -l "$MIGRATE" "$KIT.zip"
-        {
-          echo "### 🔧 引导程序套件"
-          echo "- \`$KIT.zip\` — preloader + FIP + 链接说明"
-          echo "- \`$MIGRATE\` — tcboot 机器不拆机迁移用，走 spinand 页从 \`0x0\` 整片写入"
-        } >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Upload Firmware To Artifact(将固件上传到Artifact)
-      if: steps.compile.outputs.status == 'success' && env.PUBLISH_RELEASE != 'true'
-      uses: actions/upload-artifact@v7
+      uses: actions/upload-artifact@v4
       with:
         name: ${{ env.RELEASE_TAG }}
         path: ${{ env.FIRMWARE_PATH }}
         retention-days: 30
-
-    - name: Artifact Summary(下载说明)
-      if: steps.compile.outputs.status == 'success' && env.PUBLISH_RELEASE != 'true'
-      env:
-        RELEASE_LABEL: ${{ github.event.inputs.release_label }}
-      run: |
-        {
-          echo "### 📦 固件已上传为 Artifact，没有发 Release"
-          echo "- 名称：\`$RELEASE_TAG\`${RELEASE_LABEL:+（$RELEASE_LABEL）}"
-          echo "- 在本页底部 **Artifacts** 处下载（需登录 GitHub），下载得到 zip，解压即是固件"
-          echo "- 保留 30 天，过期自动删除"
-        } >> "$GITHUB_STEP_SUMMARY"
-
-    - name: Upload Firmware To Release(发布固件)
-      if: steps.compile.outputs.status == 'success' && env.PUBLISH_RELEASE == 'true'
-      uses: ncipollo/release-action@v1
-      with:
-        name: ${{ env.RELEASE_TAG }}${{ github.event.inputs.release_label && format(' · {0}', github.event.inputs.release_label) || '' }}
-        tag: ${{ env.RELEASE_TAG }}
-        token: ${{ secrets.GITHUB_TOKEN }}
-        prerelease: ${{ env.IS_PRERELEASE == 'true' }}
-        artifacts: ${{ env.FIRMWARE_PATH }}/*
-        body: |
-          **This is OpenWrt Firmware for ${{ env.MODEL_TAG }}（内存 ${{ env.DRAM_LABEL }} · ${{ env.VARIANT_LABEL }} 变体）**
-          ### 🧠 内存容量
-          ${{ env.DRAM_NOTE }}
-          ### 📒 固件信息(${{ env.MODEL_TAG }})
-          - 这是 ${{ env.MODEL_TAG }} 的专属构建
-          - 🧠 内存容量：${{ env.DRAM_LABEL }}
-          - 🧩 编译变体：**${{ env.VARIANT_LABEL }}**
-          - 📐 设备定义：`${{ env.DEVICE_SYMBOL }}`
-          - 💻 目标分支：${{ env.REPO_BRANCH }}
-          - ⚽ 固件源码: ${{ env.REPO_URL }}
-          - 🌐 默认地址: 192.168.1.1
-          - 🔑 默认密码: 无
-          ### 💾 分区布局与刷机方式
-          ${{ env.LAYOUT_NOTE }}
-          ### 🧊 固件版本
-          - 固件内核版本：${{ env.VERSION_KERNEL }}
-          - 固件编译前最后一次➦[主源码](${{ env.REPO_URL }})更新记录
-          - ${{ env.VERSION_INFO }}
-          ### 📦 内置软件包
-          - 本次编译的自定义软件包清单见下方附件 `custom-packages.txt`
-          - 固件实际安装的完整包列表见附件中的 `*.manifest`，完整内核配置见 `build.config`
-          ### 🧩 附加软件包
-          ${{ env.EXTRA_NOTE }}
-          - 想加装别的软件包：在[选包页](https://loong1996.github.io/ImmortalWrt-Airoha/packages.html)勾选后复制包名串，粘进本 workflow 的 `extra_packages` 输入重新编译
-          ### 🔖 软件包版本覆盖
-          ${{ env.PKG_VER_NOTE }}
-          - 由仓库里的 `config/pkg-versions.txt` 控制，编译前改写 feed 的 `PKG_VERSION` 并自动重算 `PKG_HASH`
-
-          ☕ 业余维护，开源不收费。觉得有用就 **点个 Star**，或请作者喝杯咖啡：
-
-          <img src="https://raw.githubusercontent.com/Loong1996/ImmortalWrt-Airoha/main/guide/img/reward.jpg" width="180" alt="Loong 的赞赏码">
-
-    - name: Publish Pages Site(发布门户与选包页)
-      if: steps.compile.outputs.status == 'success'
-      env:
-        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      run: |
-        # 索引取自本次编译用的源码树：只有它能反映这条分支实际编得出哪些包，
-        # 自建的 luci-app-airoha-npu 之类官方 apk 索引里是没有的。
-        # tmp/.packageinfo 由 make defconfig 生成，编译结束后依然在。
-        PI="$OPENWRT_PATH/tmp/.packageinfo"
-        if [ ! -s "$PI" ]; then
-          echo "::warning::未找到 $PI，跳过选包页更新"
-          exit 0
-        fi
-        # 只有正式发布进选包页：测试分支会在 gh-pages 上留下没人引用的索引文件，
-        # pre-release 与只传 Artifact 的构建软件包组合是定制的，不该成为选包页的默认参照
-        if [ "$IS_PRERELEASE" = "true" ]; then
-          echo "::notice::非正式发布（分支 $REPO_BRANCH，发布方式 $RELEASE_MODE），跳过选包页更新"; exit 0
-        fi
-        # 索引按分支一份，不分机型。all 时几个 job 会互相覆盖，只让 MD 发布
-        if [ "${{ inputs.device }}" = "all" ] && [ "$DEVICE" != "xg-040g-md" ]; then
-          echo "::notice::all 构建由 xg-040g-md 更新选包页，$DEVICE 跳过"; exit 0
-        fi
-        PAGES="$RUNNER_TEMP/pages"
-        mkdir -p "$PAGES"
-        python3 "$GITHUB_WORKSPACE/selector/build-index.py" \
-          "$PI" \
-          "$OPENWRT_PATH/.config" \
-          "$GITHUB_WORKSPACE/$CONFIG_FILE" \
-          "$REPO_BRANCH" "$RELEASE_TAG" \
-          "$PAGES/packages-$REPO_BRANCH.json" \
-          "$EXTRA_ADD"
-
-        # 门户 / 选包页 / 救砖教程一起发布。不要只拷 selector/index.html
-        # 到根路径 —— 那会把三卡片门户顶掉，只剩选包工具。
-        bash "$GITHUB_WORKSPACE/scripts/publish-pages.sh" \
-          "$PAGES" \
-          "选包页：更新 $REPO_BRANCH 索引（$RELEASE_TAG）"
